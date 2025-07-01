@@ -1,4 +1,7 @@
 # CLARA-LLM_for_cancer_patient_assistance
+
+Authors: Tyler Black, Ashlyn King, Carly Beninati, John Luong
+
 Cancer patients need assistance obtaining accurate, easy-to-understand, and personalized information about their specific diagnosis, treatment options, and available resources. 
 To provide patients with such help, this project focuses on developing a large language model trained to access available medical and community resources, specifically within the oncology domain. 
 
