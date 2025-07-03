@@ -40,4 +40,10 @@ sys.base_prefix
 
 deactivate
 
+Step 2: Install the dependencies so you can run the chat bot
 
+pip install transformers accelerate
+
+Step 3: start the chat bot by running the python file:
+
+python Example_ChatBot.pyt
