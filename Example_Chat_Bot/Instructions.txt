@@ -1,0 +1,43 @@
+These are some instructions for how to run this code.
+
+It will contain all the requirements that you will
+    need in order to run the chat bot properly.
+
+
+Step 1: Create a python virtual environment.
+    - This will allow you to make any pip installs local
+        to just the virtual environment.
+    - I am running on Windows Powershell, so the following
+        is how I created a virtual environment:
+
+PS> python -m venv .env
+
+        - .env is the directory that I am storing all the
+            virtual environment data files in
+
+    - To activate the virtual environent,
+        I ran the following command (once again on Windows PowerShell):
+
+PS> <venv>\Scripts\Activate.ps1
+
+        - where <venv> is the path to the directory containing
+            the virtual environent (in my case: .env)
+    - You can check if your virtual environment has been
+        activated by starting up the Python interpreter
+        and running the following:
+
+import sys
+sys.prefix
+sys.base_prefix
+
+        - if the virtual environent has been activated,
+            then the last two lines should give different outputs
+            - The first should point to the directory of the virtual environment
+            - The second should point to the base Python
+
+    - When you are done with your virtual environment,
+        enter the following command to deactivate it
+
+deactivate
+
+
