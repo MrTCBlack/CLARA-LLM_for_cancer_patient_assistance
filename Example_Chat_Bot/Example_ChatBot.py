@@ -6,6 +6,26 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, TextStreamer
 import time
 
+def prolog():
+    print()
+    print("Welcome to this example protype of a simple chat bot.")
+    print("This is meant to just show off how the Huggingface libraries "+
+          "can be used to make a simple chat bot.")
+    print("It also shows off some prompt engineering techniques that can "+
+          "get better output form an LLM.")
+    print("Each output from the LLM is timed and the time is output"+
+          " after the output from the LLM. This is just a metric.\n")
+    
+    print("INSTRUCTIONS:")
+    print(" - Enter your question and wait for a response.")
+    print(" - When you are done chatting, enter 'quit()' to quit.\n")
+
+    print("WARNING: This is probably very slow if you are just running on a laptop, like I am.")
+    print("Please be patient as you are using the chatbot.\n")
+
+    input("Press RETURN to begin chatting")
+    
+
 
 def intro(pipe):
 
@@ -32,9 +52,11 @@ def intro(pipe):
     return outputs
 
 
+
 def have_conversation(pipe, outputs):
-    user_input = input()
+    user_input = input("Enter your question> ")
     while (user_input != "quit()"):
+        print()
 
         # Having the previous output as part of the new prompt gives
         #   provides the LLM with memory of it's response to the previous question
@@ -59,9 +81,22 @@ def have_conversation(pipe, outputs):
         elapsed_time = end_time - start_time
         print(f"Time taken: {elapsed_time:.4f} seconds")
         print()
-        user_input = input()
+        user_input = input("Enter your question> ")
+    print()
 
 
+def outro(pipe):
+    # Just some epiloge from the LLM after you have quit
+    epiloge_prompt = [
+        {"role": "system", "content": "The user has finished asking questions. Thank them for asking you questions and wish them a good day."}
+    ]
+
+    start_time = time.time()
+    outputs=pipe(epiloge_prompt, do_sample=True)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"Time taken: {elapsed_time:.4f} seconds")
+    print()
 
 
 
@@ -102,16 +137,13 @@ def main():
         {"role": "user", "content": "Hey, what was this criminal brought into the station for?"}
     ]'''
 
-    
+    prolog()
 
     outputs = intro(pipe)
 
     have_conversation(pipe, outputs)
 
-
-
-
-
+    outro(pipe)
 
 
 
