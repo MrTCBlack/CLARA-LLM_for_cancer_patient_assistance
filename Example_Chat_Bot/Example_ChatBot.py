@@ -27,15 +27,26 @@ def prolog():
     
 
 
-def intro(pipe):
+def intro(pipe, scenario):
 
-    # Initial prompt in order to give the LLM context for what it is supposed to do.
-    # I don't believe that it will remember this prompt once the look starts
-    # For it to rememebr, you may need to give it the context with every prompt
-    persona = "You are a conversational assistant designed to answer user questions.\n"
-    instruction = "You will receive a question from a user and your goal is to answer it to the best of your ability.\n"
-    context = "Start by introducing yourself to the user."
-    query = persona + instruction + context
+    if (scenario == 0):
+        # Initial prompt in order to give the LLM context for what it is supposed to do.
+        # I don't believe that it will remember this prompt once the look starts
+        # For it to rememebr, you may need to give it the context with every prompt
+        persona = "You are a conversational assistant designed to answer user questions.\n"
+        instruction = "You will receive a question from a user and your goal is to answer it to the best of your ability.\n"
+        context = "Start by introducing yourself to the user."
+        query = persona + instruction + context
+    elif (scenario == 1):
+        # This is a scenario for the LLM as an expert zookeeper
+        persona = "You are an expert zoologist giving a safari tour. You are great at explaining intricate details about animals in an fun, concise, and understandable fashion.\n"
+        instruction = "Wait for the people on the toor to ask you quesitons and then give fun and understandable answers the questions about animals.\n"
+        context = "To prompt the members of the safari, make observations about the environment around you.\n"
+        audience = "Your responses are designed for someone who loves animals but doesn't know a lot about them. They need your help explaining information.\n"
+        tone = "Your tone should be friendly and enthusiastic.\n"
+        caution = "If you are asked questions that do not relate to animals or the safari, let the asker know that you are not familiar with the subject and can not give a good answer to it.\n"
+        query = persona + instruction + audience + tone + caution
+
 
     context_prompt = [
         {"role": "system", "content": query}
@@ -53,7 +64,7 @@ def intro(pipe):
 
 
 
-def have_conversation(pipe, outputs):
+def have_conversation(pipe, outputs, scenario):
     user_input = input("Enter your question> ")
     while (user_input != "quit()"):
         print()
@@ -71,9 +82,19 @@ def have_conversation(pipe, outputs):
         user_question = f"My next question is: '{user_input}'"
         instruction = f"Provide an answer to my question."
         user_query = previous_output + user_question + instruction
-        user_prompt = [
-            {"role": "user", "content": user_query}
-        ]
+
+        if (scenario == 0): 
+            user_prompt = [
+                {"role": "user", "content": user_query}
+            ]
+        if (scenario == 1):
+            persona = "You are an expert zoologist giving a safari tour. You are great at explaining intricate details about animals in an fun, concise, and understandable fashion.\n"
+            caution = "If you are asked questions that do not relate to animals or the safari, let the asker know that you are not familiar with the subject and can not give a good answer to it.\n"
+            system_context = persona + caution
+            user_prompt = [
+                {"role": "system", "content": system_context},
+                {"role": "user", "content": user_query}
+            ]
 
         start_time = time.time()
         outputs=pipe(user_prompt, do_sample=True)
@@ -85,11 +106,20 @@ def have_conversation(pipe, outputs):
     print()
 
 
-def outro(pipe):
-    # Just some epiloge from the LLM after you have quit
-    epiloge_prompt = [
-        {"role": "system", "content": "The user has finished asking questions. Thank them for asking you questions and wish them a good day."}
-    ]
+def outro(pipe, scenario):
+    
+    if (scenario == 0):
+        # Just some epiloge from the LLM after you have quit
+        epiloge_prompt = [
+            {"role": "system", "content": "The user has finished asking questions. Thank them for asking you questions and wish them a good day."}
+        ]
+    elif (scenario == 1):
+        persona = "You are an expert zoologist giving a safari tour. You are great at explaining intricate details about animals in an fun, concise, and understandable fashion.\n"
+        caution = "If you are asked questions that do not relate to animals or the safari, let the asker know that you are not familiar with the subject and can not give a good answer to it.\n"
+        system_context = persona + caution
+        epiloge_prompt = [
+            {"role": "system", "content": system_context + "The safari has finished. Thank the guests for coming on the tour and wish them a good day."}
+        ]
 
     start_time = time.time()
     outputs=pipe(epiloge_prompt, do_sample=True)
@@ -139,11 +169,11 @@ def main():
 
     prolog()
 
-    outputs = intro(pipe)
+    outputs = intro(pipe, 1)
 
-    have_conversation(pipe, outputs)
+    have_conversation(pipe, outputs, 1)
 
-    outro(pipe)
+    outro(pipe, 1)
 
 
 
