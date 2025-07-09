@@ -4,7 +4,73 @@
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, TextStreamer
+from transformers import BitsAndBytesConfig
 import time
+
+
+def setup_model():
+    device_map = None
+    quantization_config = None
+    cuda_enabled_input = input("Do you have CUDA GPU enabled.\nEnter 'YES' or 'NO'. (Default will utilize CPU only)\n> ")
+    cuda_enabled_input = cuda_enabled_input.lower()
+    if (cuda_enabled_input in {"yes", "y"}):
+        quantization_amount_input = input("Do you want to quantize to 8, 4, or None.\nEnter '8', '4', or anything else. (Default will be set to none)\n> ")
+        #8-bit quantization makes inference more accessible without significant performance degradation
+        if (quantization_amount_input == "8"):
+            quantize_amount = 8
+        #4-bit quantization compresses models even further, making computation faster but could be some performance degredation
+        elif (quantization_amount_input == "4"):
+            quantize_amount = 4
+        else:
+            quantize_amount = -1
+        
+        device_map_input = input("Do you want all the model layers to be mapped to the GPU.\n Enter 'Yes' or 'No'. (Default will map to best configuration)\n> ")
+        device_map_input = device_map_input.lower()
+        if (device_map_input in {"yes", "y"}):
+            device_map = "cuda"
+        else:
+            device_map = "auto"
+
+        if (quantize_amount == 8 and device_map == "auto"):
+            quantization_config = BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
+        elif (quantize_amount == 8):
+            quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+        elif (quantize_amount == 4):
+            quantization_config = BitsAndBytesConfig(load_in_4bit=True)
+
+        if (quantize_amount == -1):
+            # CUDA GPU but don't want to use quantized version of model
+            model = AutoModelForCausalLM.from_pretrained(
+                "microsoft/Phi-3-mini-4k-instruct",
+                device_map=device_map,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=False,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                "microsoft/Phi-3-mini-4k-instruct",
+                device_map=device_map,
+                quantization_config=quantization_config,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=False,
+            )
+    else:
+        # Utilizing CPU because don't have CUDA GPU
+        model = AutoModelForCausalLM.from_pretrained(
+            "microsoft/Phi-3-mini-4k-instruct",
+            device_map="cpu",   #I am using cpu here because that is what I have found runs best
+                                #If you have CUDA capabilities for GPUs and are able to use them
+                                #   for better performance, use device_map="auto" or device_map="cuda"
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=False,
+        )
+    print(cuda_enabled_input)
+    print(device_map)
+    print(quantization_config)
+    print()
+    
+    return model
+
 
 def prolog():
     print()
@@ -215,14 +281,8 @@ def main():
     # For this example we will be using microsoft/Phi-3-mini-4k-instruct
     #   The link to this model can be found here: https://huggingface.co/microsoft/Phi-3-mini-4k-instruct
 
-    model = AutoModelForCausalLM.from_pretrained(
-        "microsoft/Phi-3-mini-4k-instruct",
-        device_map="cpu",   #I am using cpu here because that is what I have found runs best
-                            #If you have CUDA capabilities for GPUs and are able to use them
-                            #   for better performance, use device_map="auto" or device_map="cuda"
-        torch_dtype="auto",
-        trust_remote_code=False,
-    )
+    model = setup_model()
+
     tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
 
     # Create text streamer - outputs each word to stdout as it is generated, rather than one large output at the end
