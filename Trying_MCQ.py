@@ -2,6 +2,38 @@
 #   this is going to try to train on multiple choice questions
 # Going to try on GBaker/MedQA-USMLE-4-options dataset
 
+# NOTE------------------------------------------
+#               NOTES FOR USE
+# NOTE: At that bottom of this file there is trainer.train() and trainer.evaluate()
+#   Use trainer.train() for training
+#       After training make sure to save the LoRA adapter to some director 
+#           to load in the future
+#       Metrics will also be calculated during training 
+#   Use trainer.evaluate() for evaluating the model on the metrics
+#       If the adapter is not loaded in when evaluating after your first time training,
+#           the base model will be evaluated.
+#           This is because we are not actually changing any of the
+#               parameters of the model.
+#           Only changing parameters of the adapter
+#       If you want to evaluate the base model, then do not load the adapter
+# 
+# NOTE: There are two ways to enable your model to use Low-Rank Adaptation (LoRA),
+#           a method for parameter-efficient fine-tuning (PEFT)
+#   - When you are training for the first time: 
+#       Set up the LoraConfig and then wrap your base model in the LoraConfig
+#       After traing, make sure you save your model to some directory
+#       Do this so that you can load the trained adapter when you want to 
+#           evaluate or continue training the model
+#   - After your first time traing:
+#        If you want to evaluate or continue training the model
+#           from the most recent version of your trained model,
+#           load the adapter from the directory you saved it in
+#           and wrap your base model in it.
+#           Use  PeftModel.from_pretrained()
+#       Whenever continuing your training, make sure to always save
+#           the model after training 
+
+#############  Additional Notes ##############
 # NOTE: This code runs, but I'm not sure if it calculates accuracy correctly
 #       Was only able to run it on very small datasets
 #       Would need someone to verify on larger dataset
@@ -15,12 +47,13 @@
 #   - max_memory in model
 #   - training_args 
 
+
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import Trainer, TrainingArguments
 from transformers import DataCollatorForLanguageModeling
 from transformers import BitsAndBytesConfig
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 import torch
 import numpy as np
 from collections import defaultdict
@@ -50,8 +83,10 @@ tokenizer.pad_token = tokenizer.eos_token  # Set pad token to eos token
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
 # Preprocess function for the test set
-#medQA_test = medQA["test"].shuffle().select(range(5))  # Select a subset for testing; random
+#medQA_test = medQA["test"].shuffle().select(range(1000))  # Select a subset for testing; random
 medQA_test = medQA["test"].select(range(5))
+
+max_length = 448
 
 # Set up the dictionary that is needed for evaluation and the compute_metric
 def preprocess_test_function(example):
@@ -69,22 +104,26 @@ def preprocess_test_function(example):
         "choice_index": [],
         "is_correct": [],
     }
+    
+    # Need to account for the padding for Answer start 
     for i, choice in enumerate(choice_texts):
         full_text = question + choice
-        input_ids = tokenizer(full_text, padding="max_length", truncation=True, max_length=512).input_ids
+        input_ids = tokenizer(full_text, padding="max_length", truncation=True, max_length=max_length).input_ids
         labels = input_ids.copy()
+        
+        # Mask out everything before the start of the answer (includes the padding and the question)
+        padding_amount = max_length - len(tokenizer(full_text).input_ids)
+        if padding_amount < 0:
+            padding_amount = 0
+        answer_start = len(tokenizer(question, truncation=True, max_length=max_length)["input_ids"])
+        mask_amount = padding_amount + answer_start
+        labels[:mask_amount] = [-100] * mask_amount # Mask out padding and question part
 
-        # Mask out everything before the start of the answer
-        answer_start = len(tokenizer(question, truncation=True, max_length=512)["input_ids"])
-        #print(answer_start)
-        labels[:answer_start] = [-100] * answer_start  # Mask out the question part
 
         results["input_ids"].append(input_ids)
         results["labels"].append(labels)
         results["question_id"].append(example["question"])
-        #print(i, end=" ")
         results["choice_index"].append(i)
-        #print(answer_index, possible_answers.index(answer_index))
         results["is_correct"].append(int(i == possible_answers.index(answer_index)))
 
     return results
@@ -92,7 +131,6 @@ def preprocess_test_function(example):
 tokenized_medQA_test = medQA_test.map(
     preprocess_test_function, 
     remove_columns=medQA_test.column_names)
-
 
 # Flatten all the lists so that it can be taken by compute_metric
 def flatten(examples):
@@ -110,7 +148,6 @@ tokenized_medQA_test = tokenized_medQA_test.map(
     flatten,
     batched=True
 )
-
 
 # Preprocess function for the train set
 
@@ -180,12 +217,7 @@ tokenized_medQA_train = medQA_train.map(
     remove_columns=medQA_train.column_names,
 )
 
-# Define a compute_metrics function
-def compute_metrics(eval_preds):
-    #losses = eval_preds.predictions # These are loss values returned by 'prediction_loss_only=True'
-    logits = eval_preds.predictions
-    labels = eval_preds.label_ids
-
+def compute_results(logits):
     # Each entry corresponds to (question, choice)
     # defaultdict provides a default value for a nonexistent key in the dictionary,
     #   eliminating the need for checking if the key exists before using it
@@ -198,18 +230,205 @@ def compute_metrics(eval_preds):
         score = -np.mean(logits[i]) # negative for "lower is better"
         results[qid].append((choice_idx, score, is_correct))
     
+    #print(results)
+    return results
+
+def compute_per_example_loss(logits, labels):
+    logits = torch.tensor(logits)
+    labels = torch.tensor(labels)
+
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+
+    # Compute loss per token
+    loss_fct = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+    per_token_loss = loss_fct(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1)
+    ).view(shift_labels.size()) # (batch, seq_len)
+
+    # Mask out -100s and average per example
+    valid_mask = shift_labels != -100
+    per_example_loss = (per_token_loss * valid_mask).sum(dim=1) / valid_mask.sum(dim=1)
+
+    return per_example_loss
+
+def compute_perplexity_metrics(results, losses):
+    # divide the losses into their groups of 4 (4 choices for each question)
+    blocked_losses = [losses[i : i+4] for i in range(0, len(losses), 4)]
+    
+
+    # The perplexities of the correct answers
+    # If the model is trained well, all loses in true_losses should
+    #   be the same ones found by min_loss
+    true_losses = []
+
     correct = 0
     total = 0
     for qid, choices in results.items():
         true_choices = [idx for idx, _, correct_flag in choices if correct_flag]
         true_choice = true_choices[0]
+        true_losses.append(blocked_losses[total][true_choice])
+        
+        # Because the greater the loss, the greater the perplexity,
+        #   can just find min loss
+        # Min loss should be the correct answer if model trained correctly
+        min_loss = min(blocked_losses[total]) # pick the choice with the lowest (best) loss
+        pred_choice = (blocked_losses[total] == min_loss).nonzero(as_tuple=True)[0][0] # get the index of that choice
+        if pred_choice == true_choice:
+            correct += 1
+        total += 1
+    
+    
+    perplexity_accuracy = correct / total
+    
+    # If the model is trained well, correct_perplexity should be much less than all_perplexity
+    # Should be predicting the correct answer with much more confidence than others
+    correct_perplexity = torch.exp(torch.tensor(true_losses).mean()).item()
+    all_perplexity = torch.exp(losses.mean()).item()
+
+    return perplexity_accuracy, correct_perplexity, all_perplexity
+
+
+def compute_MR_MRR(results, losses):
+    # divide the losses into their groups of 4 (4 choices for each question)
+    blocked_losses = [losses[i : i+4] for i in range(0, len(losses), 4)]
+
+    results_by_question = defaultdict(list)
+
+    index = 0
+    for qid, answers in results.items():
+        for i, answer in enumerate(answers):
+            results_by_question[qid].append((blocked_losses[index][i], answer[2]))
+        index += 1
+
+    reciprocal_ranks = []
+    ranks = []
+
+
+    for qid, answers in results_by_question.items():
+        # Sort by loss (lower is better)
+        sorted_answers = sorted(enumerate(answers), key=lambda x: x[1][0])
+        # Find rank of correct answer
+        for rank, (idx, (loss, is_correct)) in enumerate(sorted_answers, start=1):
+            if is_correct:
+                reciprocal_ranks.append(1.0/rank)
+                ranks.append(rank)
+                break # Only one correct answer per question
+    
+    mrr = np.mean(reciprocal_ranks)
+    mean_rank = np.mean(ranks)
+
+    return mrr, mean_rank
+
+def compute_confidence_margin(losses):
+    # divide the losses into their groups of 4 (4 choices for each question)
+    blocked_losses = [losses[i : i+4] for i in range(0, len(losses), 4)]
+
+    margins = []
+
+    for loss_block in blocked_losses:
+        sorted_losses = sorted(loss_block)
+        if len(sorted_losses) >= 2:
+            margin= sorted_losses[1] - sorted_losses[0]
+            margins.append(margin)
+    
+    avg_margin = float(np.mean(margins))
+    std_margin = float(np.std(margins))
+    median_margin = float(np.median(margins))
+    num_questions = len(blocked_losses)
+
+    return avg_margin, std_margin, median_margin, num_questions
+
+
+
+    
+def compute_accuracy(results):
+    correct = 0
+    total = 0
+    for qid, choices in results.items():
+        true_choices = [idx for idx, _, correct_flag in choices if correct_flag]
+        true_choice = true_choices[0]
+        
         pred_choice = min(choices, key=lambda x: x[1])[0] # pick choice with lowest (best) score
         if pred_choice == true_choice:
             correct += 1
         total += 1
     
     accuracy = correct / total
-    return {"accuracy": accuracy}
+    return accuracy
+
+
+
+# Define a compute_metrics function
+def compute_metrics(eval_preds):
+    logits = eval_preds.predictions
+    labels = eval_preds.label_ids
+
+
+    results = compute_results(logits)
+
+    #print(compute_per_example_loss(logits, labels))
+
+    losses = compute_per_example_loss(logits, labels)
+    #print(losses)
+
+    # Calculate accuracy based on perplexity
+    # Perplexity is measuring confident is the model in perdicitng the next token
+    # So for MC, "How surprising is this answer, given the quesiton?"
+    # A well trained model should have the lowest perplexities for the correct answer
+    # Lower perplexity --> more confident, more accurate
+    # Higher perplexity --> more uncertainty, more spread-out probability
+    #  
+    # perplexity_accuracy - how many pedictions were correct based on min perplexity
+    # correct_perplexity - The average perplexity across the correct answers
+    # all_perplexity - The average perplexity across all answers
+    #   If the model is trained well, correct_perplexity should be much less than all_perplexity;
+    #   This is because the model should be confident about predicting the correct answers compared to the others
+    perplexity_accuracy, correct_perplexity, all_perplexity = compute_perplexity_metrics(results, losses)
+
+    # Calculate Mean Rank and Mean Reciprocal Rank
+    # Based on the losses, rank each of the models predicted answer (lower loss --> better rank)
+    # Mean Rank - Average position of the correct answer (Lower is better)
+    #           - If always predicts correct answer with lowest loss, then Mean Rank = 1.0
+    #               - Will be greater than 1 if anything else
+    # MRR - On average, how close to first is the correct answer (Higher is better)
+    #     - If always predicts correct answer with lowest loss, then MRR = 1.0
+    #       - Will be less than 1 if anything else
+    mrr, mean_rank = compute_MR_MRR(results, losses)
+
+    # Calculate Confidence Margin
+    # The difference in model confidence (based on loss) between:
+    #   - The top predicted choice (lowest loss), and
+    #   - The second-best choice (next lowest loss)
+    # 
+    # Gives insigt into how decisively the model made its choice.
+    # A large margin means the model was more confident
+    # Small or negative margins can flag uncertain or risky decisions
+    # Does not tell anything about the correct answer.
+    #   However, if it does pick the correct answer (which can be seen by other metrics)
+    #       a larger confidence margin will show that the model was more confident about that correct prediction
+    # 
+    # avg_margin - On average, how confident the model is
+    # std_margin - How variable/confident the model is across questions
+    # median_margin - Typical confidence level (less affected by outliers) 
+    avg_margin, std_margin, median_margin, num_questions = compute_confidence_margin(losses)
+
+    # accuracy determined by the logits
+    accuracy = compute_accuracy(results)
+    
+    return {
+        "accuracy": accuracy,
+        "perplex_accuracy": perplexity_accuracy,
+        "correct_perplex" : correct_perplexity,
+        "all_perplex" : all_perplexity,
+        "mean_rank": mean_rank,
+        "MRR": mrr,
+        "avg_confidence_margin": avg_margin,
+        "std_confidence_margin": std_margin,
+        "median_confidence_margin": median_margin,
+        "num_questions": num_questions,
+    }
 
 # Run Evaluation with Trainer
 quantization_config = BitsAndBytesConfig(
@@ -230,8 +449,10 @@ model = AutoModelForCausalLM.from_pretrained(
     }
 )
 
+
+# NOTE: Use Before first training
 # create LoRA configuration object
-lora_config = LoraConfig(
+'''lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM, # type of task to train on
     inference_mode=False, # set to False for training
     r=8, # dimension of the smaller matrices
@@ -240,7 +461,10 @@ lora_config = LoraConfig(
 )
 
 # Add LoraConfig to the model
-model.add_adapter(lora_config, adapter_name="lora_1")
+model = get_peft_model(model, lora_config)'''
+
+# NOTE: After first training
+model = PeftModel.from_pretrained(model, "./test/lora_adapter")
 
 # Define training hyperparameters in TrainingArguments
 training_args = TrainingArguments(
@@ -260,15 +484,13 @@ training_args = TrainingArguments(
     per_device_eval_batch_size=4,
     dataloader_drop_last=False,
 
-    prediction_loss_only=False,
+    #prediction_loss_only=False,
 
     save_strategy="epoch",  #Optional: save checkpoint after each epoch
     logging_strategy="epoch",   #Optional: log once per epoch
 
     # Other useful options
     #save_total_limit=2, # Limit number of saved checkpoints
-    #load_best_model_at_end=True, # Optional: load best checkpoint by eval metric
-    #metric_for_best_model="accuracy",   # Must match your compute_metrics output
 )
 
 # Pass the training arguments to Trainer along with the model, datasets, and data collator
@@ -282,5 +504,12 @@ trainer = Trainer(
     compute_metrics=compute_metrics
 )
     
-#print(trainer.evaluate())
-print(trainer.train())
+# Train
+#print(trainer.train())
+# Need to manually save LoRA Adapter afterwords
+#model.save_pretrained("./test/lora_adapter")
+
+
+# Evaluate
+print(trainer.evaluate())
+
