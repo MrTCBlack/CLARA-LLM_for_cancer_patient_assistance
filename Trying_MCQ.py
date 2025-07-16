@@ -466,6 +466,14 @@ model = get_peft_model(model, lora_config)'''
 # NOTE: After first training
 model = PeftModel.from_pretrained(model, "./test/lora_adapter")
 
+# Need to call this anytime the model is reloaded for training
+# Esures:
+#   - The LoRA weights are active
+#   - Their gradients are enabled (requires_grad = True)
+#   - You're not accidentally training a frozen model 
+model.set_adapter("default")
+
+
 # Define training hyperparameters in TrainingArguments
 training_args = TrainingArguments(
     output_dir="test",  # Where to save checkpoints & logs
