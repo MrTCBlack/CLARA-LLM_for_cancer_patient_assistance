@@ -77,7 +77,7 @@ training_args = TrainingArguments(
     learning_rate=2e-5,
     per_device_train_batch_size=1,
     per_device_eval_batch_size=1,
-    gradient_accumulation_steps=1,
+    gradient_accumulation_steps=2,
     num_train_epochs=3,
     eval_strategy="epoch",
     save_strategy="epoch",
@@ -91,8 +91,8 @@ training_args = TrainingArguments(
 trainer = Trainer(
     model=peft_model,
     args=training_args,
-    train_dataset=dataset["train"].select(range(100)),
-    eval_dataset=dataset["validate"].select(range(20)),
+    train_dataset=dataset["train"].select(range(5000)), #5000
+    eval_dataset=dataset["validate"].select(range(1000)), #1000
     processing_class=tokenizer,
     data_collator=data_collator
 )
@@ -127,5 +127,5 @@ Notes for future improvements:
 
 Keep in mind for loading trained models:
 peft_model = PeftModel.from_pretrained(model, "my_tests/lora_adapter")
-tokenizer = AutoTokenizer.from_pretrained("my_tests/lora_adapter)
+tokenizer = AutoTokenizer.from_pretrained("my_tests/lora_adapter")
 """
