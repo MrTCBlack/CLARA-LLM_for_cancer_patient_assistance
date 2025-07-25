@@ -51,7 +51,7 @@
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import Trainer, TrainingArguments
-from transformers import DataCollatorForLanguageModeling
+from transformers import DataCollatorWithPadding
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 import torch
@@ -78,76 +78,77 @@ medQA = load_dataset("GBaker/MedQA-USMLE-4-options")
 #       - Don't use any of the other options
 
 # Load tokenizer
-tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.3")
+tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.3", model_max_length=512, add_eos_token=True)
 tokenizer.pad_token = tokenizer.eos_token  # Set pad token to eos token
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
 
 # Preprocess function for the test set
 #medQA_test = medQA["test"].shuffle().select(range(1000))  # Select a subset for testing; random
 medQA_test = medQA["test"].select(range(5))
 
-max_length = 448
 
 # Set up the dictionary that is needed for evaluation and the compute_metric
-def preprocess_test_function(example):
+def preprocess_test_function(examples):
     possible_answers = ["A", "B", "C", "D"]
 
-    question = f"Question: {example["question"]} Answer: "
-    choice_texts = [" " + options for options in example["options"].values()]
-    answer_index = example["answer_idx"]
-
-
-    results = {
+    processed = {
         "input_ids": [],
+        "attention_mask": [],
         "labels": [],
         "question_id": [],
         "choice_index": [],
         "is_correct": [],
     }
-    
-    # Need to account for the padding for Answer start 
-    for i, choice in enumerate(choice_texts):
-        full_text = question + choice
-        input_ids = tokenizer(full_text, padding="max_length", truncation=True, max_length=max_length).input_ids
-        labels = input_ids.copy()
-        
-        # Mask out everything before the start of the answer (includes the padding and the question)
-        padding_amount = max_length - len(tokenizer(full_text).input_ids)
-        if padding_amount < 0:
-            padding_amount = 0
-        answer_start = len(tokenizer(question, truncation=True, max_length=max_length)["input_ids"])
-        mask_amount = padding_amount + answer_start
-        labels[:mask_amount] = [-100] * mask_amount # Mask out padding and question part
+
+    for i in range(len(examples["question"])):
+        question = f"Question: {examples['question'][i]} Answer: "
+        options = examples["options"][i]
+        answer_idx = possible_answers.index(examples["answer_idx"][i])
+        question_id = examples["question"][i]
+
+        max_len = 0
+        choice_inputs = []
+
+        # First pass: tokenize all full texts and compute max_len
+        for choice_letter in possible_answers:
+            choice_text = " " + options[choice_letter]
+            full_text = question + choice_text
+            tokenized = tokenizer(full_text, add_special_tokens=True)
+            choice_inputs.append(tokenized)
+            max_len = max(max_len, len(tokenized["input_ids"]))
 
 
-        results["input_ids"].append(input_ids)
-        results["labels"].append(labels)
-        results["question_id"].append(example["question"])
-        results["choice_index"].append(i)
-        results["is_correct"].append(int(i == possible_answers.index(answer_index)))
+        max_len = max_len + (max_len % 8)
 
-    return results
+        # Second pass: pad inputs and build labels
+        for j, tokenized in enumerate(choice_inputs):
+            input_ids = tokenized["input_ids"]
+            attention_mask = tokenized["attention_mask"]
+
+            padding_len = max_len - len(input_ids)
+            padded_input_ids = [tokenizer.pad_token_id] * padding_len + input_ids
+            padded_attention_mask = [0] * padding_len + attention_mask
+
+            question_len = len(tokenizer(question, add_special_tokens=False)["input_ids"])
+            labels = [-100] * padding_len + input_ids.copy()
+            labels[:padding_len + question_len] = [-100] * (padding_len + question_len)
+
+            processed["input_ids"].append(padded_input_ids)
+            processed["attention_mask"].append(padded_attention_mask)
+            processed["labels"].append(labels)
+            processed["question_id"].append(question_id)
+            processed["choice_index"].append(j)
+            processed["is_correct"].append(int(j == answer_idx))
+
+    return processed
+
 
 tokenized_medQA_test = medQA_test.map(
     preprocess_test_function, 
+    batched=True,
     remove_columns=medQA_test.column_names)
 
-# Flatten all the lists so that it can be taken by compute_metric
-def flatten(examples):
 
-    result = {}
-    for key, items in examples.items():
-        result[key] = []
-        for item in items:
-            for el in item:
-                result[key].append(el)
-
-    return result
-
-tokenized_medQA_test = tokenized_medQA_test.map(
-    flatten,
-    batched=True
-)
 
 # Preprocess function for the train set
 
@@ -161,61 +162,55 @@ tokenized_medQA_test = tokenized_medQA_test.map(
 #   - Your labels are the same, but mask the "Question: ... Answer:" part
 #       with -100 so the loss is only computed on the Answer 
 
-medQA_train = medQA["train"].shuffle().select(range(5))  # Select a subset for training; random
+medQA_train = medQA["train"].shuffle().select(range(30))  # Select a subset for training; random
 #medQA_train = medQA["train"].select(range(5))
 
-block_size = 128 #Change this based on how much your GPU can handle
+#block_size = 128 #Change this based on how much your GPU can handle
 
-def preprocess_train_funciton(example):
-    questions = [f"Question: {question} Answer: " for question in example["question"]]
-    answers = example["answer"]
-    input_ids = []
+def preprocess_train_function(examples):
+    possible_input_texts = [
+        f"Question: {q} Answer: {a}" for q, a in zip(examples["question"], examples["answer"])
+    ]
+
+    # Tokenize
+    tokenized = tokenizer(
+        possible_input_texts,
+        add_special_tokens=True,
+        return_tensors=None,)
+
+    # Compute labels with masked question part
     labels = []
-    for question, answer in zip(questions, answers):    
-        input_text = question + answer
-        input_id = tokenizer(input_text).input_ids
 
-        label = input_id.copy()
-        # Mask out everything before the start of the answer
-        answer_start = len(tokenizer(question).input_ids)
-        label[:answer_start] = [-100] * answer_start
+    for i in range(len(possible_input_texts)):
+        input_ids = tokenized["input_ids"][i]
+        input_len = len(input_ids)
+        padding = input_len % 8
 
-        input_ids.extend(input_id)
-        labels.extend(label)
-    
+        input_ids = [tokenizer.pad_token_id] * padding + input_ids
+        attention_mask = [0] * padding + tokenized["attention_mask"][i]
 
-    
-    #Need to break both input_ids and labels into blocks
+        tokenized["input_ids"][i] = input_ids
+        tokenized["attention_mask"][i] = attention_mask
 
-    # Total_length gets the length of the concatenated input_ids
-    total_length = len(input_ids)
+        question = f"Question: {examples['question'][i]} Answer: "
+        question_len = len(tokenizer(question, add_special_tokens=False)["input_ids"])
 
-    # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
-    #   customize this part to your needs.
-    # It ensures that the total length is a multiple of block_size, dropping any
-    #   remainder tokens that don't fit into a full block.
-    # This avoids partial chunks at the end, unless you later choose to pad them 
-    if total_length >= block_size:
-        total_length = (total_length // block_size) * block_size
+        label_ids = input_ids.copy()
+        label_ids[:padding+question_len] = [-100] * (padding+question_len)
+        labels.append(label_ids)
 
-    # Split by chunks of block_size.
-    # Splits each flattened list into chunks of size block_size
-    # Important because the model expects inputs of a fixed size
-    # k is the key (e.g., input_ids, attention_mask), and t is the list of values
-    #   for that key.
-    result = {
-        "input_ids": [input_ids[i : i + block_size] for i in range(0, total_length, block_size)],
-        "labels": [labels[i: i + block_size] for i in range(0, total_length, block_size)]
-    }
+    tokenized["labels"] = labels
+    return tokenized
 
-
-    return result
 
 tokenized_medQA_train = medQA_train.map(
-    preprocess_train_funciton,
+    preprocess_train_function,
     batched=True,
     remove_columns=medQA_train.column_names,
 )
+
+#print(tokenized_medQA_train[0])
+#print(tokenizer.decode(tokenized_medQA_train[0]["input_ids"]))
 
 def compute_results(logits):
     # Each entry corresponds to (question, choice)
@@ -230,7 +225,7 @@ def compute_results(logits):
         score = -np.mean(logits[i]) # negative for "lower is better"
         results[qid].append((choice_idx, score, is_correct))
     
-    #print(results)
+    print(results)
     return results
 
 def compute_per_example_loss(logits, labels):
@@ -371,7 +366,7 @@ def compute_metrics(eval_preds):
     #print(compute_per_example_loss(logits, labels))
 
     losses = compute_per_example_loss(logits, labels)
-    #print(losses)
+    print(losses)
 
     # Calculate accuracy based on perplexity
     # Perplexity is measuring confident is the model in perdicitng the next token
@@ -434,7 +429,8 @@ def compute_metrics(eval_preds):
 quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16)
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True)
 
 # Load Mistral model
 model = AutoModelForCausalLM.from_pretrained(
@@ -452,7 +448,7 @@ model = AutoModelForCausalLM.from_pretrained(
 
 # NOTE: Use Before first training
 # create LoRA configuration object
-'''lora_config = LoraConfig(
+lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM, # type of task to train on
     inference_mode=False, # set to False for training
     r=8, # dimension of the smaller matrices
@@ -461,10 +457,10 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 # Add LoraConfig to the model
-model = get_peft_model(model, lora_config)'''
+model = get_peft_model(model, lora_config)
 
 # NOTE: After first training
-model = PeftModel.from_pretrained(model, "./test/lora_adapter")
+#model = PeftModel.from_pretrained(model, "./test/lora_adapter")
 
 # Need to call this anytime the model is reloaded for training
 # Esures:
@@ -486,10 +482,11 @@ training_args = TrainingArguments(
     learning_rate=2e-5, # Typical starting point for transformers
     weight_decay=0.01,  # Optional: helps regularize the model
 
+
     # Evaluation
     do_eval=True,
     eval_strategy="epoch",    # or "steps" (set eval_steps if using steps)
-    per_device_eval_batch_size=4,
+    per_device_eval_batch_size=4, # For evaluation: 1 question, 4 choices, so need be in batched of 4
     dataloader_drop_last=False,
 
     #prediction_loss_only=False,
@@ -499,6 +496,11 @@ training_args = TrainingArguments(
 
     # Other useful options
     #save_total_limit=2, # Limit number of saved checkpoints
+    per_device_train_batch_size=1,  # Trained on correct answer for each question, so none need to be batched together
+    gradient_accumulation_steps=1,
+    label_names=["labels"],
+    fp16=True,
+    fp16_full_eval=True
 )
 
 # Pass the training arguments to Trainer along with the model, datasets, and data collator
@@ -511,13 +513,15 @@ trainer = Trainer(
     processing_class=tokenizer,
     compute_metrics=compute_metrics
 )
-    
+
+
+
 # Train
-#print(trainer.train())
+print(trainer.train())
 # Need to manually save LoRA Adapter afterwords
-#model.save_pretrained("./test/lora_adapter")
+model.save_pretrained("./test/lora_adapter")
 
 
 # Evaluate
-print(trainer.evaluate())
+#print(trainer.evaluate())
 
