@@ -227,6 +227,9 @@ def evaluate_model_generation(model, tokenized_evaluation_set):
             "attention_mask": attention_mask,
             "max_new_tokens": 500,
             "streamer": streamer,
+            # If you are seeing that the model is starting to repeat itself and not
+            #   fully complete an output, turn this flag on
+            "do_sample": True,
         })
         thread.start()
 
@@ -245,6 +248,9 @@ def evaluate_model_generation(model, tokenized_evaluation_set):
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=500,
+            # If you are seeing that the model is starting to repeat itself and not
+            #   fully complete an output, turn this flag on
+            do_sample=True,
         )
         
         new_tokens = generated_ids[0, input_ids.shape[1]:]
