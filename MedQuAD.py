@@ -19,10 +19,16 @@ import threading
 
 # Load lavita/MedQuAD dataset
 # Number of records with question and answer
-medQuAD = load_dataset("lavita/MedQuAD", split=["train[:16400]"])[0]
+medQuAD = load_dataset("lavita/MedQuAD")
 
 # Remove all examples that don't contain an answer
-medQuAD = medQuAD.filter(lambda example: example["answer"]!=None)
+medQuAD = medQuAD["train"].filter(lambda example: example["answer"]!=None)
+
+# Remove all examples where question contains the word 'cancer'
+# These will only be used in the evaluation dataset
+# Size: 16337
+medQuAD = medQuAD.filter(lambda example: example["question"].find("cancer") == -1)
+
 
 # split the dataset's train split into a train and test set
 # Seed is there for testing purposes
@@ -65,7 +71,7 @@ data_collator = DataCollatorForCausalLMWithCustomMasking(tokenizer)
 #data_collator = DataCollatorWithPadding(tokenizer, return_tensors="pt", pad_to_multiple_of=8)
 
 # NOTE: Training set
-medQuAD_train = medQuAD["train"].shuffle().select(range(30))  # Select a subset for training; random
+medQuAD_train = medQuAD["train"].shuffle().select(range(50))  # Select a subset for training; random
 #medQuAD_train = medQA["train"].select(range(5))
 
 
@@ -178,8 +184,6 @@ tokenized_medQuAD_generate = medQuAD_test.map(
 
 #print(tokenized_medQuAD_generate[0])
 #print(tokenizer.decode(tokenized_medQuAD_generate["input_ids"][0]))
-
-
 
 
 # Normalized match
@@ -382,7 +386,7 @@ trainer = Trainer(
 
 # NOTE: Evaluate
 # Generation phase
-results = evaluate_model_generation(model, tokenizer)
+'''results = evaluate_model_generation(model, tokenizer)
 
 questions = results["questions"]
 predictions = results["predictions"]
@@ -462,5 +466,5 @@ for i in range(len(questions)):
     #   is related to the reference 
     print(f"BERTscore Precision: {bertscores["precision"][i]}")
     print(f"BERTscore Recall: {bertscores["recall"][i]}")
-    print(f"BERTscore f1: {bertscores["f1"][i]}\n")
+    print(f"BERTscore f1: {bertscores["f1"][i]}\n")'''
 
