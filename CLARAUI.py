@@ -47,7 +47,7 @@ model.set_adapter("default")
 
 def intro():
     # Initial prompt in order to give the LLM context for what it is supposed to do.
-    persona = "\n\nYou are CLARA (Cancer Language and Response Assistant) here to help patients and care givers understand medical lingo.\n"
+    persona = "\n\nSystem: You are CLARA (Cancer Language and Response Assistant) here to help patients and care givers understand medical lingo.\n"
     instruction = "You will to receive a question from a user and your goal is to answer it to the best of your ability. Accuracy in answers is more important than the ability to respond.\n"
     context = "A patient or care giver has come to you to ask a question about cancer. They may not understand medical lingo and may need you to explain it in layman's terms.\n"
     audience = "You are answering questions from a user who is not familiar with medical lingo. They may be a patient or a care giver, but they do not have a medical background.\n"
@@ -90,7 +90,7 @@ def clara_chat(user_input, history):
         max_new_tokens=300,
         do_sample=True,
         temperature=0.9,
-        stop_strings=["User:", "CLARA:", "\nUser:"], #use this to stop CLARA from making it's own dialogue
+        stop_strings=["User:", "CLARA:", "\nUser:", "System:"], #use this to stop CLARA from making it's own dialogue
     )
     thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
     thread.daemon = True
