@@ -1,2 +1,3 @@
 #want to ignore the python virtual environment
 .env
+.gradio
