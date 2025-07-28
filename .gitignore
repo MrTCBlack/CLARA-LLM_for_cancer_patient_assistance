@@ -1,2 +1,18 @@
 #want to ignore the python virtual environment
-.env
+.venv
+test
+example.py
+prompt_eng.py
+requirements.txt
+testing.py
+text_gen_train.py
+trainMCQ.py
+__pycache__
+other_tests
+test2
+claraui.py
+eval.py
+MedQA.py
+Medquad.py
+training.py
+CLARA.py
