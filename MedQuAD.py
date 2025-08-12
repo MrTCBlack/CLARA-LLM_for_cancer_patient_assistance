@@ -1,3 +1,12 @@
+# MedQuAD.py
+# Script used for testing the training and evaluation via the lavita/MedQuAD dataset.
+# Eventually used just for training our model.
+# The training dataset that we use is made up examples from the lavita/MedQuAD dataset,
+#   where each example contains a question and an answer, and the question doesn't
+#   contain the word 'cancer'. 
+#  
+#---------------------------------------------------
+
 # Going to try on lavita/MedQuAD dataset
 # A dataset of medical question and answers
 # Will be used to train the model to predict longer answers

@@ -1,3 +1,9 @@
+# CLARAUI.py
+# This is the script for running the CLARA model as oncology focussed chatbot.
+# Using Gradio to make the user-friendly question-and-answer interface,
+#   a user can easily interact with the CLARA model via a web browser. 
+#  
+
 import gradio as gr
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, TextIteratorStreamer
 from transformers import BitsAndBytesConfig
